@@ -22,7 +22,7 @@ Turn the **SOS key** of a phone that has no power button into a standard Android
 | 部分 | 类型 | 作用 |
 |---|---|---|
 | [`magisk/`](magisk) | Magisk 模块 | 按键映射：SOS（`sprd-keypad` 扫描码 61）→ `POWER`，挂机键（`gpio-keys` 扫描码 116）→ `ENDCALL` |
-| [`lsposed/`](lsposed) | LSPosed 模块（作用域：系统框架） | 去掉厂商的两个限制：「只认原厂桌面」和「锁屏页按电源键直接解锁」 |
+| [`lsposed/`](lsposed) | LSPosed 模块（作用域：系统框架） | 去掉厂商的两个限制：「只认原厂桌面」和「锁屏页按电源键直接解锁」；过滤熄屏唤醒时键盘误报的音量键（见[已知硬件问题](#已知硬件问题)） |
 
 两个都要装。只装 Magisk 模块，SOS 在桌面上只会回桌面；只装 LSPosed 模块，按键映射没变，什么都不会发生。
 
@@ -70,6 +70,12 @@ adb install --no-incremental -r a89-power-fix.apk
 - 在 Magisk 里删除 `sos_as_power`，在 LSPosed 里关闭或卸载模块，重启。
 - 命令行删除 Magisk 模块：`adb shell su -c "touch /data/adb/modules/sos_as_power/remove"`，然后重启。
 - 开不了机：开机动画时连按三下音量减（需要「音量键救砖」之类的 Magisk 模块）；或进 Magisk 安全模式。
+
+## 已知硬件问题
+
+手机进入深度休眠后，按 SOS 键唤醒的那一下，键盘（`sprd-keypad`）会在上报 `KEY_F3` 的同时，多上报一对 `KEY_VOLUMEUP` + `KEY_VOLUMEDOWN`，三个事件相隔只有几十微秒，结果是每次唤醒都可能弹出音量条。在 `getevent` 这一层（安卓之下）就能看到，所以来自内核驱动或键盘硬件，不是本项目引入的。只在深度休眠唤醒时出现，插着 USB 充电时一般复现不了。
+
+LSPosed 模块在分发按键时过滤它：音量键的按下时间和电源键相差 50 毫秒以内，就判定为误报并丢弃；正常按音量键不受影响。这是一个系统层的绕过办法，没有修复内核驱动。
 
 ## 已知限制
 
