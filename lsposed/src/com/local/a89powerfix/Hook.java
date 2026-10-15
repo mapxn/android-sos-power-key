@@ -25,9 +25,15 @@ public class Hook implements IXposedHookLoadPackage {
     // Set while interceptKeyBeforeQueueing handles a power key event on this thread.
     private static final ThreadLocal<Boolean> IN_POWER_KEY = new ThreadLocal<>();
 
-    // Down time (uptime ms) of the latest power key press, and how close a volume key must be to it.
-    private static volatile long lastPowerDownTime = Long.MIN_VALUE / 2;
+    // A volume key whose down time is this close to a power key press is a phantom.
     private static final long GHOST_WINDOW_MS = 50;
+    // How long a just-queued volume key waits for the power key of the same report.
+    private static final long GHOST_WAIT_MS = 50;
+    // Down time (uptime ms) of the latest power key press.
+    private static volatile long lastPowerDownTime = Long.MIN_VALUE / 2;
+    // Down time of the latest queued volume key press, and the uptime at which it was queued.
+    private static volatile long lastVolumeDownTime = Long.MIN_VALUE / 2;
+    private static volatile long lastVolumeQueuedAt = Long.MIN_VALUE / 2;
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -57,14 +63,22 @@ public class Hook implements IXposedHookLoadPackage {
         }
     }
 
+    private static boolean isVolumeKey(int keyCode) {
+        return keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN;
+    }
+
     // Named classes instead of anonymous ones: d8 34 crashes on anonymous subclasses here.
     private static final class PowerKeyScope extends XC_MethodHook {
         @Override
         protected void beforeHookedMethod(MethodHookParam param) {
             KeyEvent event = (KeyEvent) param.args[0];
+            boolean down = event.getAction() == KeyEvent.ACTION_DOWN;
             if (event.getKeyCode() == KeyEvent.KEYCODE_POWER) {
                 IN_POWER_KEY.set(Boolean.TRUE);
-                if (event.getAction() == KeyEvent.ACTION_DOWN) lastPowerDownTime = event.getDownTime();
+                if (down) lastPowerDownTime = event.getDownTime();
+            } else if (isVolumeKey(event.getKeyCode()) && down) {
+                lastVolumeDownTime = event.getDownTime();
+                lastVolumeQueuedAt = SystemClock.uptimeMillis();
             }
         }
 
@@ -78,23 +92,29 @@ public class Hook implements IXposedHookLoadPackage {
      * When the phone is woken from deep sleep the A89 keypad reports a phantom VOLUME_UP +
      * VOLUME_DOWN together with the SOS key, which pops up the volume bar. They carry the
      * same down time as the power key (a real volume press never does), so drop them.
-     * The volume keys come first in that report, so a fresh volume key is held back until
-     * the power key of the same report has had time to be queued.
+     * The volume keys come first in that report and can be dispatched before its power key
+     * is queued, so a volume key queued moments ago is held back until the power key has
+     * had time to arrive. The wait is measured from queueing, not from the event's down
+     * time: after deep sleep the events reach Android 60-100 ms after they happened.
      */
     private static final class DropGhostVolumeKeys extends XC_MethodHook {
         @Override
         protected void beforeHookedMethod(MethodHookParam param) {
             KeyEvent event = (KeyEvent) param.args[1];
-            int code = event.getKeyCode();
-            if (code != KeyEvent.KEYCODE_VOLUME_UP && code != KeyEvent.KEYCODE_VOLUME_DOWN) return;
+            if (!isVolumeKey(event.getKeyCode())) return;
             long downTime = event.getDownTime();
             if (Math.abs(downTime - lastPowerDownTime) <= GHOST_WINDOW_MS) {
+                if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                    XposedBridge.log("A89PowerFix: dropped phantom volume key " + event.getKeyCode());
+                }
                 param.setResult(Long.valueOf(-1L));
                 return;
             }
-            long age = SystemClock.uptimeMillis() - downTime;
-            // A positive result asks the dispatcher to retry this event after that many ms.
-            if (age < GHOST_WINDOW_MS) param.setResult(Long.valueOf(GHOST_WINDOW_MS - age));
+            if (downTime == lastVolumeDownTime) {
+                long waited = SystemClock.uptimeMillis() - lastVolumeQueuedAt;
+                // A positive result asks the dispatcher to retry this event after that many ms.
+                if (waited < GHOST_WAIT_MS) param.setResult(Long.valueOf(GHOST_WAIT_MS - waited));
+            }
         }
     }
 
