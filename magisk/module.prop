@@ -1,0 +1,6 @@
+id=sos_as_power
+name=SOS Key as Power Key
+version=2.0
+versionCode=3
+author=local
+description=SOS key (sprd-keypad 61) -> POWER, hang-up key (gpio-keys 116) -> ENDCALL. Needs LSPosed module com.local.a89powerfix
